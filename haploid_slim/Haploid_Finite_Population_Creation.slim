@@ -1,0 +1,603 @@
+//This file is used to simulate haploid population adaptation after allopatric separation and immediate phenotype optimum shift
+//using Fisher's geometric model. 
+//This simulation runs for 10,000 generations using mltiple parameters that can be defined through the command line
+//NOTE: This file requires mutation libraries to be already present in the working directory if multiple versions of this simulation are running simultaneously
+
+//A simple function to write string or numeric information to a CSV file as a new line to the file without overwrite
+function(void)write_csv_append(string filename, * info){
+	writeFile(filename,paste(info,sep=","),append=T);
+}
+
+
+//This function computes parallel evolution statistics for all non-F1 populations present in the simulation environment
+function(numeric)commonalities(void){
+	num_comparisons=0.0;
+	//average proportion of common fixed mutations between any two populations
+	mean_mutational=0.0;
+	//average proportion of the genome that is common (only including fixe mutations) between any two populations
+	mean_overall=0.0;
+	//average phenotypic distance to the optimum only considering mutations common between any two given population pairs
+	mean_common_distance=0.0;
+	//average number of fixed mutations in a population
+	num_fixations=0.0;
+	//average number of fixed mutations common between any two populations
+	num_common=0.0;
+	//average size of fixed mutations in any population
+	mean_size=0.0;
+	//Apply to all pairs of populations only once
+	for (index1 in 0:last_pop_index){
+		for (index2 in 1:last_pop_index){
+			if(index1<index2){
+				//get non-undoing mutations
+				muts1=	sim.mutations[sim.mutations.subpopID==(index1+1) & sim.mutations.tag];
+				muts2=	sim.mutations[sim.mutations.subpopID==(index2+1) & sim.mutations.tag];
+				
+				
+				//get their frequencies
+				freq1=sim.mutationFrequencies(sim.subpopulations[index1],muts1);
+				freq2=sim.mutationFrequencies(sim.subpopulations[index2],muts2);
+				
+				//calculate the positional mutation frequencies, an involved process due to how SLiM stores mutations
+				pos_freqs1 = rep(0.0,genome_size);
+				pos_freqs2 = rep(0.0,genome_size);
+				
+				if(length(freq1)>0){
+					for(i in 0:(length(freq1)-1)){
+						pos_freqs1[muts1[i].position]=pos_freqs1[muts1[i].position]+freq1[i];
+					}
+				}
+				
+				if(length(freq2)>0){
+					for(i in 0:(length(freq2)-1)){
+						pos_freqs2[muts2[i].position]=pos_freqs2[muts2[i].position]+freq2[i];
+					}
+				}
+				
+				//all common mutations between the two. Note, in this haploid model all frequencies are halved!
+				inter = which((pos_freqs1>0.4) & (pos_freqs2>0.4));
+				//number of common mutations
+				num_common=num_common+length(inter);
+				//proportion of mutations that are common
+				mean_mutational=mean_mutational+length(inter)/((sum(pos_freqs1>0.4)+sum(pos_freqs2>0.4))/2);
+				//overall proportion of genome that is different between the two populations (assuming fixed/not fixed)
+				mean_overall = mean_overall+ (sum(pos_freqs1>0.4)+sum(pos_freqs2>0.4)-2*length(inter))/genome_size;
+				
+				//number of fixations in each populations (only needs to be calculated once per population), along with average size of fixed mutations
+				if(index2 == index1+1){
+					num_fixations = num_fixations+sum(pos_freqs1>0.4);
+					
+					fixed_pos = which(pos_freqs1>0.4);
+					sizes = 0.0;
+					if(length(fixed_pos)>0){
+						for(i in fixed_pos){
+							sizes=sizes+sqrt(sum((mutation_library[i,1:n])^2));
+						}
+						sizes=sizes/length(fixed_pos);
+					}
+					mean_size = mean_size+sizes;
+				}
+				
+				
+				//phenotype and its distance from the optimum for only common fixed mutations
+				Z=rep(0.0,n);
+				if(length(inter)>0){
+					for(pos in inter){
+						Z=Z+mutation_library[pos,1:n];
+					}
+				}
+				
+				
+				mean_common_distance=mean_common_distance+sqrt(sum((Z-optimum)^2));
+				
+				//update number of comparisons made
+				num_comparisons=num_comparisons+1;
+			}
+		}
+	}
+	//return a vector of averaged mean_mutational, mean_overall, mean_common_distance, num_fixations, num_common, avg size
+	return c(mean_mutational/num_comparisons,mean_overall/num_comparisons,mean_common_distance/num_comparisons,num_fixations/num_pops,num_common/num_comparisons,mean_size/num_pops);
+}
+
+//outputs simulation information information for a given subpopulation
+//REQUIRES: A valid slim population
+//EFFECTS: Outputs all relevant simulation information about a population, including the individual
+//genomes, the relevant mutation information, and select simulation parameters
+function(void)OutputInfo(void){
+	if(!fileExists("results.csv")){
+		writeFile("results.csv",paste(c(
+			"run",
+			"library_id",
+			"gen",
+			"lambda",
+			"k",
+			"l",
+			"mutation_rate",
+			"mean_parental_fitness",
+			"mean_parental_distance",
+			"mean_F1_fitness",
+			"mean_F1_distance",
+			"mean_mutational",
+			"mean_overall",
+			"mean_common_distance",
+			"num_fixations",
+			"num_common",
+			"mean_size"),sep=","));
+	}
+	results = commonalities();
+	write_csv_append("results.csv",c(
+		runNumber,
+		library_id,
+		sim.generation,
+		lambda,
+		k,
+		genome_size,
+		mutationRate,
+		mean(sim.subpopulations[0:last_pop_index].individuals.fitnessScaling),
+		mean(sapply(sim.subpopulations[0:last_pop_index].individuals,"applyValue.getValue(\"distance\");")),
+		mean(sim.subpopulations[F1_index].individuals.fitnessScaling),
+		mean(sapply(sim.subpopulations[F1_index].individuals,"applyValue.getValue(\"distance\");")),
+		results[0],
+		results[1],
+		results[2],
+		results[3],
+		results[4],
+		results[5]));
+}
+
+//output detailed population information at the end of the simulation
+function(void)OutputExtraInfo(void){
+	if(!fileExists("end_results.csv")){
+		writeFile("end_results.csv",paste(c(
+			"run",
+			"library_id",
+			"pop1",
+			"pop2",
+			"lambda",
+			"k",
+			"l",
+			"mutation_rate",
+			"mean_parental_fitness",
+			"mean_parental_distance",
+			"mean_F1_fitness",
+			"mean_F1_distance",
+			"mean_mutational",
+			"mean_overall",
+			"mean_common_distance",
+			"num_common"),sep=","));
+	}
+	
+	F1_inds =sim.subpopulations[F1_index].individuals;
+	
+	for (index1 in 0:last_pop_index){
+		for (index2 in 1:last_pop_index){
+			if(index1<index2){
+				//get positional mutation frequencies
+				muts1=	sim.mutations[sim.mutations.subpopID==(index1+1) & sim.mutations.tag];
+				muts2=	sim.mutations[sim.mutations.subpopID==(index2+1) & sim.mutations.tag];
+				
+				
+				
+				freq1=sim.mutationFrequencies(sim.subpopulations[index1],muts1);
+				freq2=sim.mutationFrequencies(sim.subpopulations[index2],muts2);
+				
+				pos_freqs1 = rep(0.0,genome_size);
+				pos_freqs2 = rep(0.0,genome_size);
+				
+				if(length(freq1)>0){
+					for(i in 0:(length(freq1)-1)){
+						pos_freqs1[muts1[i].position]=pos_freqs1[muts1[i].position]+freq1[i];
+					}
+				}
+				
+				if(length(freq2)>0){
+					for(i in 0:(length(freq2)-1)){
+						pos_freqs2[muts2[i].position]=pos_freqs2[muts2[i].position]+freq2[i];
+					}
+				}
+				
+				//get common mutation position
+				inter = which((pos_freqs1>0.4) & (pos_freqs2>0.4));
+				//portion common mutations
+				mean_mutational=length(inter)/((sum(pos_freqs1>0.4)+sum(pos_freqs2>0.4))/2);
+				
+				//portion of genome different
+				mean_overall = (sum(pos_freqs1>0.4)+sum(pos_freqs2>0.4)-2*length(inter))/genome_size;
+				
+				//number of common mutations
+				num_common=length(inter);
+				
+				//distance to optimum from common mutations
+				Z=rep(0.0,n);
+				if(length(inter)>0){
+					for(pos in inter){
+						Z=Z+mutation_library[pos,1:n];
+					}
+				}
+				
+				
+				mean_common_distance=sqrt(sum((Z-optimum)^2));
+				
+				//F1 and parental information (distance and fitness)
+				mean_F1_fitness=mean(F1_inds[F1_inds.x==index1 & F1_inds.y==index2].fitnessScaling);
+				mean_F1_distance=mean(sapply(F1_inds[F1_inds.x==index1 & F1_inds.y==index2],"applyValue.getValue(\"distance\");"));
+				mean_parental_fitness=(mean(sim.subpopulations[index1].individuals.fitnessScaling)+mean(sim.subpopulations[index2].individuals.fitnessScaling))/2;
+				mean_parental_distance=mean(sapply(sim.subpopulations[c(index1,index2)].individuals,"applyValue.getValue(\"distance\");"));
+				
+				//write to file
+				write_csv_append("end_results.csv",c(
+					runNumber,
+					library_id,
+					index1,
+					index2,
+					lambda,
+					k,
+					genome_size,
+					mutationRate,
+					mean_parental_fitness,
+					mean_parental_distance,
+					mean_F1_fitness,
+					mean_F1_distance,
+					mean_mutational,
+					mean_overall,
+					mean_common_distance,
+					num_common));
+			}
+		}
+	}
+	
+	//information only about parental populations
+	
+	if(!fileExists("end_results_parental.csv")){
+		writeFile("end_results_parental.csv",paste(c(
+			"run",
+			"library_id",
+			"pop_number",
+			"lambda",
+			"k",
+			"l",
+			"mutation_rate",
+			"mean_parental_fitness",
+			"mean_parental_distance",
+			"num_fixations",
+			"mean size"),sep=","));
+	}
+	for(index1 in 0:last_pop_index){
+	//get positional mutation frequencies
+		muts1=	sim.mutations[sim.mutations.subpopID==(index1+1) & sim.mutations.tag];
+		freq1=sim.mutationFrequencies(sim.subpopulations[index1],muts1);
+		pos_freqs1 = rep(0.0,genome_size);
+		for(i in 0:(length(freq1)-1)){
+			pos_freqs1[muts1[i].position]=pos_freqs1[muts1[i].position]+freq1[i];
+		}
+		//get fixed positions
+		fixed_pos = which(pos_freqs1>0.4);
+		//get mutation sizes
+		sizes = 0.0;
+		if(length(fixed_pos)>0){
+			for(i in fixed_pos){
+				sizes=sizes+sqrt(sum((mutation_library[i,1:n])^2));
+			}
+			sizes=sizes/length(fixed_pos);
+		}
+		mean_size = sizes;
+		
+		
+		//write to file
+		write_csv_append("end_results_parental.csv",c(
+			runNumber,
+			library_id,
+			index1,
+			lambda,
+			k,
+			genome_size,
+			mutationRate,
+			mean(sim.subpopulations[index1].individuals.fitnessScaling),
+			mean(sapply(sim.subpopulations[index1].individuals,"applyValue.getValue(\"distance\");")),
+			sum(pos_freqs1>0.4),
+			mean_size));
+	}
+
+
+}
+
+
+
+
+
+//Creates and prints a library of mutations based on position in the genome for individuals to draw from
+//EFFECTS: Based on pre-defined simulation parameters, returns and also records in a file a constant global matrix where row number
+//(starting from 0) denotes genome position, the first column denotes the multi-dimensional trait sphere the 
+//mutation inhabits, and the rest of the columns denote trait values for all n traits. These traits are created randomly
+//using pre-defined lambda values.
+function(numeric)CreateMutationLibrary(void){
+	fileName = "mutationLibrary"+library_id+".csv";
+	header = "sphere,"+(paste(rep("traitValue",n)+1:n,sep=","));
+	writeFile(fileName,header);
+	library = matrix(rep(0.0,genome_size*(n+1)),ncol=(n+1));
+	for(i in 0:(genome_size-1)){
+		xi = rnorm(n);
+		r= rexp(1,lambda);
+		deltaZ = xi*r/sqrt(sum(xi^2));
+		sphere=rdunif(1,min=1,max=m);
+		library[i,]=c(sphere,deltaZ);
+		writeFile(fileName,paste(c(sphere,deltaZ),sep=","),T);
+	}
+	return library;
+}
+
+function(numeric)GetMutationLibrary(void){
+	fileName = "mutationLibrary"+library_id+".csv";
+	library = matrix(rep(0.0,genome_size*(n+1)),ncol=(n+1));
+	lines = readFile(fileName);
+	lines=lines[1:(size(lines)-1)];
+	for (i in 0:(size(lines)-1)){
+		fields = strsplit(lines[i], ",");
+		sphere = asInteger(fields[0]);
+		deltaZ = asFloat(fields[1:n]);
+		library[i,]= c(sphere,deltaZ);
+	}
+	return library;
+}
+
+//Gives the euclidian distance between two vectors to the power of k
+//REQUIRES: two numeric vectors of the same dimensionality, k to be a numeric value previously defined globally
+//EFFECTS: returns the euclidian distance between the two vectors to the power of k
+function (numeric)EuclideanDistanceToK(numeric a, numeric b){
+	if(k==8){
+		distance=sqrt(sum((a-b)^2));
+		if(distance>1){
+			return distance^4;
+		}else{
+			return distance^2;
+		}
+	}
+	if(k==10){
+		distance=sqrt(sum((a-b)^2));
+		if(distance>1){
+			return distance^6;
+		}else{
+			return distance^2;
+		}
+	}
+	return sqrt(sum((a-b)^2))^k;
+}
+
+
+//returns the fitness of an individual within a given sphere 
+//z must be a vector, with element [a] being the ath trait value of a given phenotype sphere
+//o must be a vector, with element [a] being the ath optimum trait value of the same given phenotype sphere
+//REQUIRES: z and o to be numeric vectors of the same dimensionality, z representing the trait vector in a given sphere of an individual,
+//and o representing the optimum trait vector of the same sphere
+//EFFECTS: returns the fitness value of the individual in the given sphere
+function (numeric)fitnessFunction(numeric z, numeric o){
+	fitness = exp(-q*EuclideanDistanceToK(z,o));
+	return fitness;
+}
+
+//returns the fitnesses of a vector of individuals calculated using all spheres, given a matrix of
+//optimum trait values
+//REQUIRES: a vector of individuals, and a matrix of optimum values for all spheres in the simulation,
+//with entries [sphere, trait]. The individuals must have mutations with a deltaZ value of a numeric vector
+//of the same dimensionality as the sphere dimensionality
+//EFFECTS: a vector of fitnesses corresponding to the fitness values of all individuals
+function (numeric)getFitness(object<Individual> inds) {
+	fitnesses = rep(0.0,length(inds));
+	index=0;
+	for (ind in inds) {
+		fitness = 1.0;
+		for (mutType in sim.mutationTypes){
+			Z = rep(0,n);
+			for (mutation in ind.genome1.mutationsOfType(mutType)){
+				Z = Z + (mutation.getValue("deltaZ"));
+			}
+			fitness = fitness * fitnessFunction(Z, drop(optimum[mutType.id-1, ]));
+			ind.setValue("distance",sqrt(sum((Z-drop(optimum[mutType.id-1, ]))^2)));
+		}
+		fitnesses[index] = fitness;
+		index=index+1;
+	}
+	return fitnesses;
+}
+
+
+
+//sets the delta z of each mutation. Calls upon a pre-defined library 
+//This is a callback that is called whenever a mutation is created
+s12 mutation() {
+	//a mutation "undoing" a previous mutation (back to phenotype of rep(0,n)) is given a F tag value, and T otherwise
+	if(any(genome.mutations.position==mut.position)){
+		if(genome.mutations[genome.mutations.position==mut.position].tag){
+			mut.setMutationType(asInteger(mutation_library[mut.position,0]));
+			mut.setValue("deltaZ",rep(0,n));
+			mut.tag=F;
+		} else {
+			mut.setMutationType(asInteger(mutation_library[mut.position,0]));
+			mut.setValue("deltaZ",mutation_library[mut.position,1:n]);
+			mut.tag=T;
+		}
+	}else{
+		mut.setMutationType(asInteger(mutation_library[mut.position,0]));
+		mut.setValue("deltaZ",mutation_library[mut.position,1:n]);
+		mut.tag=T;
+	}
+	return T;
+}
+
+//This is the reproduction callback for the SLiM simulation
+//every "period" generations or in the last generation, produces F1 hybrids from all possible population pairs
+//otherwise, adds new individuals to the populations each generation, weighting parental choice based on fitness
+reproduction() {
+	if(sim.generation==end_gen){
+		for(index1 in 0:last_pop_index){
+			for(index2 in 1:last_pop_index){
+				if(index1<index2){
+					for(i in 1:100){
+						ind = sim.subpopulations[F1_index].addRecombinant(sample(sim.subpopulations[index1].individuals.genome1,1),
+							sample(sim.subpopulations[index2].individuals.genome1,1),
+							sim.chromosome.drawBreakpoints(),
+							NULL,NULL,NULL);
+						ind.x=index1;
+						ind.y=index2;
+					}
+				}
+			}
+		}
+	}
+	
+	if(sim.generation %period==0 & sim.generation != end_gen){
+		for(index1 in 0:last_pop_index){
+			for(index2 in 1:last_pop_index){
+				if(index1<index2){
+					for(i in 1:100){
+						sim.subpopulations[F1_index].addRecombinant(sample(sim.subpopulations[index1].individuals.genome1,1),
+							sample(sim.subpopulations[index2].individuals.genome1,1),
+							sim.chromosome.drawBreakpoints(),
+							NULL,NULL,NULL);
+					}
+				}
+			}
+		}
+	}
+	
+	for(pop in sim.subpopulations[0:last_pop_index]){
+		weights=pop.individuals.fitnessScaling;
+		for(i in 1:N){
+			pop.addRecombinant(sample(pop.individuals.genome1,1,weights=weights),
+				sample(pop.individuals.genome1,1,weights=weights),
+				sim.chromosome.drawBreakpoints(),
+				NULL,
+				NULL,
+				NULL);
+		}
+	}
+	
+	self.active=0;
+}
+
+
+
+// set up a simple neutral nonWF simulation
+initialize() {
+	initializeSLiMModelType("nonWF");
+	if(!exists("m")){
+		defineConstant("m",1); //number of spheres
+	}
+	if(!exists("n")){
+		defineConstant("n",5); //number of traits per sphere
+	}
+	if(!exists("q")){
+		defineConstant("q",1.0); //strength of selection
+	}
+	if(!exists("k")){
+		defineConstant("k",2.0); //degree of epistasis
+	}
+	if(!exists("N")){
+		defineConstant("N",1000); //size of each population
+	}
+	if(!exists("mutationRate")){
+		defineConstant("mutationRate", 0.0001); //mutation rate
+	}
+	if(!exists("lambda")){
+		defineConstant("lambda", 0.08); //lambda for mutation effect size
+	}
+	if(!exists("runNumber")){
+		defineConstant("runNumber", 1);
+	}
+	if(!exists("genome_size")){
+		defineConstant("genome_size",1000);
+	}
+	if(!exists("recombinationRate")){
+		defineConstant("recombinationRate", 1/genome_size); //recombination rate
+	}
+	if(!exists("undo")){
+		defineConstant("undo",T);
+	}
+	if(!exists("library_id")){
+		defineConstant("library_id",runNumber);
+	}
+	if(!exists("num_pops")){
+		defineConstant("num_pops",30);
+	}
+	if(!exists("end_gen")){
+		defineConstant("end_gen",10000);
+	}
+	if(!exists("period")){
+		defineConstant("period",50);
+	}
+	
+	//index of the population that will contain F1 hybrids
+	defineConstant("F1_index",num_pops);
+	defineConstant("last_pop_index",num_pops-1);
+	
+	//initial optimums for populations 1 and 2 are matrices, with indices [sphere,trait value]
+	initialOptimums = matrix(rep(0.0,n*m),nrow=m);
+	
+	//optimum points after movement (if desired)
+	finalOptimums = matrix(rep(0.0,n*m),nrow=m);
+	
+	
+	//Here we set the optimums
+	//NOTE: Final calculation of fitnesses are done using final optimums
+	//if the optimum does not change in the scenario, initialOptimum should equal final Optimum
+	initialOptimums[,0]=2.0;
+	finalOptimums[,0]=2.0;
+	defineConstant("optimum",finalOptimums);
+	//initial phenotypes for both populations assumed to be the origin
+	
+	//initialize other simulation parameters
+	//mutations in different spheres are represented as different mutation types
+	initializeMutationRate(mutationRate);
+	mutationTypes = NULL;
+	for (i in 1:m){
+		initializeMutationType("m" + i,0.5,"f",0.0);
+		executeLambda("m"+i+".convertToSubstitution=F;");
+		executeLambda("mutationTypes = c(mutationTypes,m" + i + ");");
+		if(undo){
+			executeLambda("m"+i+".mutationStackPolicy="+"\"l\";");
+		}else{
+			executeLambda("m"+i+".mutationStackPolicy="+"\"f\";");
+		}
+	
+	}
+	initializeGenomicElementType("g1",mutationTypes,rep(1.0,m));
+	initializeGenomicElement(g1,0,genome_size-1);
+	initializeRecombinationRate(recombinationRate);
+	if(!fileExists("mutationLibrary"+library_id+".csv")){
+		defineConstant("mutation_library", CreateMutationLibrary());
+	}else{
+		defineConstant("mutation_library", GetMutationLibrary());
+	}
+
+}
+
+//start the simulation
+1 {
+	for (i in 1:(num_pops+1)){
+		executeLambda("sim.addSubpop(\"p"+i+"\", N);");
+	}
+	sim.setValue("numFinished",0);
+}
+
+early(){
+	inds=sim.subpopulations.individuals;
+	inds[inds.age>0].fitnessScaling=0.0;
+}
+
+1:999999999 late() {
+	for(pop in sim.subpopulations[0:last_pop_index]){
+		//update individual fitnesses, and check if "optimum" reached
+		pop.individuals.fitnessScaling = getFitness(pop.individuals);
+	}
+	
+	//every "period" generations, generate F1 individuals for each population pair, generate their fitness, and output their hybrid fitness information,
+	//along with parallel adaptation statistics
+	if(sim.generation % period == 0){
+		sim.subpopulations[F1_index].individuals.fitnessScaling=getFitness(sim.subpopulations[F1_index].individuals);
+		OutputInfo();
+		if(sim.generation==end_gen){
+			OutputExtraInfo();
+		}
+	}
+	
+	if(sim.generation==end_gen+1){sim.simulationFinished();}
+}
